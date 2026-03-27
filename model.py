@@ -43,7 +43,7 @@ class GNNBranch(nn.Module):
         
         if ligand_dim is None:
             # Default ligand feature size from one-hot + chemistry features.
-            ligand_dim = 36
+            ligand_dim = 43
         self.ligand_dim = ligand_dim
         
 
