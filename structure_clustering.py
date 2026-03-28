@@ -16,7 +16,7 @@ def create_alias_pdb(src_pdb, dst_pdb):
 
 
 def cluster_structures():
-    pdb_root = os.path.join(script_dir, 'PDB')
+    pdb_root = os.path.join(script_dir, 'PDB' or 'data_sample')
     pdb_files = glob.glob(os.path.join(pdb_root, '**', '*.pdb'), recursive=True)
 
     with tempfile.TemporaryDirectory(prefix="datasail_pdb_") as tmp_dir:

@@ -570,12 +570,27 @@ if __name__ == '__main__':
         default='facebook/esm2_t33_650M_UR50D',
         help='HuggingFace ESM model name for on-the-fly embeddings'
     )
+    parser.add_argument(
+        '--split-file',
+        default=None,
+        help='Optional path to text file containing protein IDs to filter from the input JSON (e.g. train.txt).'
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.input_json):
         raise FileNotFoundError(f"Input JSON not found: {args.input_json}")
 
     binding_sites = BindingSiteGraphDataset.load_binding_sites_json(args.input_json)
+    
+    if args.split_file:
+        print(f"Filtering dataset using IDs from: {args.split_file}")
+        with open(args.split_file, 'r', encoding='utf-8') as f:
+            allowed_ids = set(line.strip() for line in f if line.strip())
+            
+        filtered_sites = [bs for bs in binding_sites if bs.get('protein_id') in allowed_ids]
+        print(f"Filtered down to {len(filtered_sites)} binding sites from {len(binding_sites)}")
+        binding_sites = filtered_sites
+
     manifest_path, total_graphs = build_and_save_graphs_batched(
         binding_sites,
         output_dir=args.output_dir,

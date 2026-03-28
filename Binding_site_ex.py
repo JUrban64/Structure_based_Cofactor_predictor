@@ -573,30 +573,53 @@ if __name__ == '__main__':
     import tqdm
     import glob
     import os
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Extract binding sites from PDB files.")
+    parser.add_argument('--pdb-root', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PDB'),
+                        help='Root directory for PDB files.')
+    parser.add_argument('--split-file', default=None,
+                        help='Optional path to text file containing protein IDs to process (e.g. train.txt).')
+    parser.add_argument('--output-json', default='binding_sites_by_protein.json',
+                        help='Output JSON file path.')
+    parser.add_argument('--ligand-name', default='NAD',
+                        help='Ligand residue name to extract.')
+    args = parser.parse_args()
 
     extractor = BindingSiteExtractor(distance_threshold=6.0)
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    pdb_root = os.path.join(script_dir, 'PDB')
-    pdb_files = glob.glob(os.path.join(pdb_root, '**', '*.pdb'), recursive=True)
+    pdb_files = glob.glob(os.path.join(args.pdb_root, '**', '*.pdb'), recursive=True)
 
     if not pdb_files:
-        print(f"No PDB files found under: {pdb_root}")
+        print(f"No PDB files found under: {args.pdb_root}")
         sys.exit(1)
 
-    print(f"Found {len(pdb_files)} PDB files")
+    if args.split_file:
+        print(f"Filtering PDB files using IDs from: {args.split_file}")
+        with open(args.split_file, 'r', encoding='utf-8') as f:
+            allowed_ids = set(line.strip() for line in f if line.strip())
+            
+        filtered_files = []
+        for pdb_file in pdb_files:
+            pid = os.path.splitext(os.path.basename(pdb_file))[0]
+            if pid in allowed_ids:
+                filtered_files.append(pdb_file)
+        pdb_files = filtered_files
+        print(f"Filtered down to {len(pdb_files)} matched PDB files")
+
+    print(f"Found {len(pdb_files)} PDB files to process")
 
     #print(extractor.extract_binding_site(pdb_files[0], ligand_name='NAD'))
 
     binding_sites_by_protein = {}
     for pdb_file in tqdm.tqdm(pdb_files, desc="Processing PDB files"):
         try:
-            bs_info = extractor.extract_binding_site(pdb_file, ligand_name='NAD')
+            bs_info = extractor.extract_binding_site(pdb_file, ligand_name=args.ligand_name)
             binding_sites_by_protein[bs_info['protein_id']] = bs_info
         except Exception as e:
             print(f"Error processing {pdb_file}: {e}")
 
-    output_json = 'binding_sites_by_protein.json'
+    output_json = args.output_json
     extractor.save_binding_sites(binding_sites_by_protein, output_json)
     loaded_binding_sites = extractor.load_binding_sites(output_json)
 

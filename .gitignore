@@ -6,3 +6,14 @@
 gnn_model.pt
 
 *.json
+
+*.tar 
+negative_sample/ 
+
+positive_samole/
+
+
+PDB/
+
+
+*.txt
