@@ -303,8 +303,16 @@ class BindingSiteExtractor:
             for res in binding_site_residues
         ])
         
+        # Determine true label based on parent directory name
+        label = 1
+        if 'negative' in pdb_file.lower():
+            label = 0
+        elif 'positive' in pdb_file.lower():
+            label = 1
+            
         return {
             'protein_id': self._protein_id_from_path(pdb_file),
+            'label': label,
             'full_sequence': full_sequence,
             'binding_site_sequence': bs_sequence,
             'binding_site_indices': binding_site_indices,
