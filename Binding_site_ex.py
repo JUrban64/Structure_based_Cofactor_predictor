@@ -264,7 +264,7 @@ class BindingSiteExtractor:
         # Extract full sequence
         full_sequence = self._get_sequence(protein_chain)
         
-        # Get ligand coordinates (using resolved name)
+        # Get ligand coordinates (using resolved name) rqě  1      
         ligand_coords = self._get_ligand_coords(structure, actual_ligand_name)
         
         if ligand_coords is None:
@@ -292,8 +292,8 @@ class BindingSiteExtractor:
                 binding_site_residues.append(residue)
                 binding_site_indices.append(i)
         
-        # Extract local contact map
-        local_contact_map = self._compute_local_contact_map(
+        # Extract local contact map and get ca_coords
+        local_contact_map, ca_coords_list = self._compute_local_contact_map(
             binding_site_residues
         )
         
@@ -318,6 +318,7 @@ class BindingSiteExtractor:
             'binding_site_indices': binding_site_indices,
             'binding_site_residues': binding_site_residues,
             'contact_map': local_contact_map,
+            'protein_coords': ca_coords_list,
             'n_binding_site': len(binding_site_residues),
             'ligand_name': ligand_name,  # Uložíme původní (logický) název
             'actual_ligand_name': actual_ligand_name,  # Skutečný název v PDB
@@ -535,8 +536,8 @@ class BindingSiteExtractor:
         # Contact if distance < threshold
         contact_map = (dist_matrix < threshold).astype(float)
         
-        return contact_map
-    
+        return contact_map, ca_coords.tolist()
+
     def _is_aa(self, residue):
         """Check if residue is amino acid"""
         return residue.get_id()[0] == ' '

@@ -82,9 +82,6 @@ class BindingSiteGraphDataset:
         if feature_config is None:
             feature_config = {
                 'use_esm': True,
-                'use_blosum': False,
-                'use_physchem': False,
-                'use_position': False
             }
         
         self.feature_config = feature_config
@@ -224,6 +221,22 @@ class BindingSiteGraphDataset:
         node_type = torch.zeros(n_total, dtype=torch.long)
         if has_ligand:
             node_type[n_prot:] = NODE_TYPE_LIGAND
+
+        # ---- POS (3D coordinates for E(3) equivariant models) ----
+        protein_coords = bs_info.get('protein_coords', [])
+        if len(protein_coords) == n_prot:
+            pos_prot = np.array(protein_coords, dtype=np.float32)
+        else:
+            pos_prot = np.zeros((n_prot, 3), dtype=np.float32)
+            
+        if has_ligand:
+            ligand_coords = [atom.get('coord', [0.0, 0.0, 0.0]) for atom in ligand_atoms]
+            pos_lig = np.array(ligand_coords, dtype=np.float32)
+            pos_all = np.vstack([pos_prot, pos_lig])
+        else:
+            pos_all = pos_prot
+            
+        pos_tensor = torch.tensor(pos_all, dtype=torch.float32)
         
         # ---- EDGES ----
         # Všechny edge_attr mají PEVNOU dimenzi EDGE_ATTR_DIM = 5:
@@ -316,6 +329,7 @@ class BindingSiteGraphDataset:
         # ---- Sestavení PyG Data ----
         graph = Data(
             x=x,
+            pos=pos_tensor,
             edge_index=edge_index,
             edge_attr=edge_attr,
             edge_type=edge_type,

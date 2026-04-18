@@ -3,7 +3,7 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import f1_score, precision_recall_curve, roc_curve, auc, average_precision_score
+from sklearn.metrics import f1_score, precision_recall_curve, roc_curve, auc, average_precision_score, confusion_matrix
 from torch_geometric.loader import DataLoader
 
 # Import utility functions from training script
@@ -125,6 +125,11 @@ def plot_roc(labels, preds, output_path='roc_curve.png'):
     plt.close()
     print(f"Saved ROC curve to {output_path}")
 
+def calc_conf_metrix(labels, preds, threshold=0.5):
+    predicted_classes = (preds > threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(labels, predicted_classes).ravel()
+    return tn, fp, fn, tp
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained GNN model on a test set.")
@@ -177,6 +182,7 @@ def main():
     ap_score = average_precision_score(labels, preds)
     predicted_classes = (preds > args.threshold).astype(int)
     f1 = f1_score(labels, predicted_classes)
+    tn, fp, fn, tp = calc_conf_metrix(labels, preds, args.threshold)
     
     print("\n" + "="*30)
     print("EVALUATION RESULTS")
@@ -184,11 +190,28 @@ def main():
     print(f"Total test samples : {len(labels)}")
     print(f"Average Precision (AP): {ap_score:.4f}")
     print(f"F1 Score (thresh={args.threshold:.2f}): {f1:.4f}")
+    print(f"True Negatives (TN): {tn}")
+    print(f"False Positives (FP): {fp}")
+    print(f"False Negatives (FN): {fn}")
+    print(f"True Positives (TP): {tp}")
     print("="*30 + "\n")
 
     # Generate plots
     plot_precision_recall(labels, preds, output_path='precision_recall_curve_test.png')
     plot_roc(labels, preds, output_path='roc_curve_test.png')
+
+
+    with open("evaluation_results_summary.txt", "w") as f:
+        f.write("EVALUATION RESULTS\n")
+        f.write("="*30 + "\n")
+        f.write(f"Total test samples : {len(labels)}\n")
+        f.write(f"Average Precision (AP): {ap_score:.4f}\n")
+        f.write(f"F1 Score (thresh={args.threshold:.2f}): {f1:.4f}\n")
+        f.write(f"True Negatives (TN): {tn}\n")
+        f.write(f"False Positives (FP): {fp}\n")
+        f.write(f"False Negatives (FN): {fn}\n")
+        f.write(f"True Positives (TP): {tp}\n")
+        f.write("="*30 + "\n")
 
 if __name__ == '__main__':
     main()

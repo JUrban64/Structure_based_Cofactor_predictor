@@ -125,7 +125,7 @@ class EarlyStopping:
 
 def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
                         hidden_dim=256, num_heads=4, dropout=0.5,
-                        num_classes=2, use_gat=True, device=None,
+                        num_classes=2, device=None,
                         early_stopping_patience=None,
                         early_stopping_min_delta=0.0,
                         early_stopping_min_epochs=1,
@@ -148,7 +148,6 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
         num_attention_heads=num_heads,
         dropout=dropout,
         num_classes=num_classes,
-        use_gat=use_gat,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)

@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_add_pool
+from torch_geometric.nn import GATConv, global_mean_pool, global_add_pool
 from torch_geometric.utils import softmax as pyg_softmax
 
 
@@ -31,13 +31,12 @@ class GNNBranch(nn.Module):
     def __init__(self, node_dim=1280,
                  hidden_dim=256,
                  num_gnn_layers=3, num_attention_heads=4,
-                 dropout=0.5, use_gat=True,
+                 dropout=0.5,
                  ligand_dim=None,
                  esm_dim=1280, esm_compress_dim=64):
         super().__init__()
         
         self.hidden_dim = hidden_dim
-        self.use_gat = use_gat
         self.node_dim = node_dim  # protein feature dim (1280 = ESM + 30) or ligand feature dim (36) - záleží na typu uzlu
         self.esm_dim = esm_dim
         
@@ -75,15 +74,14 @@ class GNNBranch(nn.Module):
         self.gnn_layers = nn.ModuleList()
         self.norms = nn.ModuleList()
         
+        gat_heads = 4
+        assert hidden_dim % gat_heads == 0, f"hidden_dim ({hidden_dim}) musí být dělitelný počtem hlav ({gat_heads})"
+        out_channels_per_head = hidden_dim // gat_heads
+        
         for i in range(num_gnn_layers):
-            if use_gat:
-                self.gnn_layers.append(
-                    GATConv(hidden_dim, hidden_dim, heads=4, concat=False)
-                )
-            else:
-                self.gnn_layers.append(
-                    GCNConv(hidden_dim, hidden_dim)
-                )
+            self.gnn_layers.append(
+                GATConv(hidden_dim, out_channels_per_head, heads=gat_heads, concat=True, edge_dim=hidden_dim)
+            )
             self.norms.append(nn.LayerNorm(hidden_dim))
         
         # ---- Multi-head attention pooling (přes protein nodes) ----
@@ -142,7 +140,7 @@ class GNNBranch(nn.Module):
         # Weighted sum pro každý head
         graph_embs = []
         for h in range(self.num_heads):
-            weighted_sum = global_add_pool(attn_scores[:, h:h+1] * protein_x, protein_batch)  # [batch_size, hidden_dim]
+            weighted_sum = global_add_pool(attn_scores[:, h:h+1] * protein_x, protein_batch, size=batch.max().item() + 1)  # [batch_size, hidden_dim]
             graph_embs.append(weighted_sum)
         
         graph_embs = torch.cat(graph_embs, dim=1)  # [batch_size, num_heads*hidden_dim]
@@ -154,14 +152,13 @@ class GraphClassifier(nn.Module):
     """Simple classifier head on top of GNNBranch."""
 
     def __init__(self, node_dim=1280, hidden_dim=256, num_attention_heads=4,
-                 dropout=0.5, num_classes=2, use_gat=True):
+                 dropout=0.5, num_classes=2):
         super().__init__()
         self.encoder = GNNBranch(
             node_dim=node_dim,
             hidden_dim=hidden_dim,
             num_attention_heads=num_attention_heads,
             dropout=dropout,
-            use_gat=use_gat,
         )
         self.classifier = nn.Linear(hidden_dim * num_attention_heads, num_classes)
 
