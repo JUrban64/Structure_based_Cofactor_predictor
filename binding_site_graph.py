@@ -250,6 +250,9 @@ class BindingSiteGraphDataset:
         # proto sjednotíme na numpy array.
         contact_map = np.asarray(bs_info['contact_map'], dtype=np.float32)
         pp_rows, pp_cols = np.where(contact_map > 0.5)
+        pp_mask = pp_rows != pp_cols
+        pp_rows = pp_rows[pp_mask]
+        pp_cols = pp_cols[pp_mask]
         if len(pp_rows) > 0:
             pp_weights = contact_map[pp_rows, pp_cols]
             pp_edges = np.stack([pp_rows, pp_cols], axis=1)          # [E_pp, 2]
@@ -312,7 +315,7 @@ class BindingSiteGraphDataset:
             edge_attr = torch.FloatTensor(all_edge_attr)  # [E, 5] – vždy stejná dim
         else:
             # Fallback: fully connected protein-only
-            edge_list = [[i, j] for i in range(n_prot) for j in range(n_prot)]
+            edge_list = [[i, j] for i in range(n_prot) for j in range(n_prot) if i != j]
             edge_index = torch.LongTensor(edge_list).t().contiguous()
             edge_type = torch.zeros(len(edge_list), dtype=torch.long)
             edge_attr = torch.zeros(len(edge_list), EDGE_ATTR_DIM)
@@ -359,12 +362,16 @@ class BindingSiteGraphDataset:
             edge_attr: [num_edges, 1] (contact probability)
         """
         rows, cols = np.where(contact_map > threshold)
+        mask = rows != cols
+        rows, cols = rows[mask], cols[mask]
         
         if len(rows) == 0:
             # Fallback: fully connected
             n = contact_map.shape[0]
             rows, cols = np.meshgrid(np.arange(n), np.arange(n), indexing='ij')
             rows, cols = rows.ravel(), cols.ravel()
+            mask = rows != cols
+            rows, cols = rows[mask], cols[mask]
             edge_weights = np.ones(len(rows), dtype=np.float32)
         else:
             edge_weights = contact_map[rows, cols].astype(np.float32)
