@@ -23,12 +23,12 @@ The pipeline consists of the following modular steps:
    - Dynamically calls `esm2_feature_ex.py` to embed protein sequences using HuggingFace's ESM-2.
    - Embeds ligand representations and defines heterogenous node/edge types.
    - Labels are automatically assigned by tracing paths from the PDB pipeline.
-   *Outputs serialized PyTorch datasets grouped into `manifest.json` batch lists to respect RAM boundaries.*
+   *Outputs serialized PyTorch datasets grouped into `manifest.json`.*
 
 4. **Model Architecture (`model.py`)**  
    A flexible graph classifier.
    - Separate embedding projections for Protein (ESM) and Ligand nodes.
-   - Message Passing Neural Network using standard GCN or flexible Multi-Head **GATv2**.
+   - Message Passing Neural Network using flexible Multi-Head **GATv2**.
    - Features Pre-Norm configurations and residual connections.
    - Includes custom structural attention pooling over protein nodes exclusively.
 
