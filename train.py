@@ -6,7 +6,7 @@ import json
 import argparse
 import random
 import numpy as np
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import f1_score
 from torch_geometric.loader import DataLoader
 
 
@@ -58,14 +58,14 @@ def split_batch_files(batch_paths, val_ratio=0.2, seed=42):
     return train_paths, val_paths
 
 
-def compute_average_precision(y_true, y_score):
-    """Return AP score or NaN when AP cannot be computed robustly."""
+def compute_macro_f1(y_true, y_pred):
+    """Return Macro F1 score or NaN when it cannot be computed."""
     if len(y_true) == 0:
         return float('nan')
     unique_labels = np.unique(y_true)
     if unique_labels.size < 2:
-        return float('nan')
-    return float(average_precision_score(y_true, y_score))
+        pass # F1 can technically compute with 1 class, but keeping semantics similar
+    return float(f1_score(y_true, y_pred, average='macro', zero_division=0))
 
 
 def evaluate_from_batch_paths(model, batch_paths, criterion, batch_size, device):
@@ -74,7 +74,7 @@ def evaluate_from_batch_paths(model, batch_paths, criterion, batch_size, device)
     total_loss = 0.0
     total_items = 0
     all_labels = []
-    all_scores = []
+    all_preds = []
 
     with torch.no_grad():
         for batch_file, graphs in iter_graph_batches_from_paths(batch_paths):
@@ -88,13 +88,13 @@ def evaluate_from_batch_paths(model, batch_paths, criterion, batch_size, device)
                 logits = model(pyg_batch)
                 loss = criterion(logits, y)
 
-                probs = torch.softmax(logits, dim=1)[:, 1]
+                preds = logits.argmax(dim=1)
                 bs = int(y.shape[0])
 
                 total_loss += loss.item() * bs
                 total_items += bs
                 all_labels.extend(y.detach().cpu().numpy().tolist())
-                all_scores.extend(probs.detach().cpu().numpy().tolist())
+                all_preds.extend(preds.detach().cpu().numpy().tolist())
 
             del loader
             del graphs
@@ -102,8 +102,8 @@ def evaluate_from_batch_paths(model, batch_paths, criterion, batch_size, device)
                 torch.cuda.empty_cache()
 
     avg_loss = (total_loss / total_items) if total_items > 0 else float('nan')
-    ap = compute_average_precision(np.array(all_labels), np.array(all_scores))
-    return avg_loss, ap, total_items
+    f1 = compute_macro_f1(np.array(all_labels), np.array(all_preds))
+    return avg_loss, f1, total_items
 
 
 class EarlyStopping:
@@ -125,7 +125,7 @@ class EarlyStopping:
 
 def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
                         hidden_dim=256, num_heads=4, dropout=0.5,
-                        num_classes=2, device=None,
+                        num_classes=5, device=None,
                         early_stopping_patience=None,
                         early_stopping_min_delta=0.0,
                         early_stopping_min_epochs=1,
@@ -188,7 +188,7 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
             f"min_epochs={early_stopping_min_epochs}"
         )
 
-    best_val_ap = -float('inf')
+    best_val_f1 = -float('inf')
     best_epoch = None
 
     for epoch in range(1, epochs + 1):
@@ -197,7 +197,7 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
         epoch_items = 0
 
         all_train_labels = []
-        all_train_scores = []
+        all_train_preds = []
 
         for batch_file, graphs in iter_graph_batches_from_paths(train_batch_paths):
             if not graphs:
@@ -214,29 +214,29 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
                 loss.backward()
                 optimizer.step()
 
-                probs = torch.softmax(logits.detach(), dim=1)[:, 1]
+                preds = logits.detach().argmax(dim=1)
 
                 bs = int(y.shape[0])
                 epoch_loss += loss.item() * bs
                 epoch_items += bs
                 all_train_labels.extend(y.detach().cpu().numpy().tolist())
-                all_train_scores.extend(probs.cpu().numpy().tolist())
+                all_train_preds.extend(preds.cpu().numpy().tolist())
 
             del loader
             del graphs
 
 
         avg_loss = (epoch_loss / epoch_items) if epoch_items > 0 else float('nan')
-        train_ap = compute_average_precision(
+        train_f1 = compute_macro_f1(
             np.array(all_train_labels),
-            np.array(all_train_scores),
+            np.array(all_train_preds),
         )
 
         val_loss = float('nan')
-        val_ap = float('nan')
+        val_f1 = float('nan')
         val_items = 0
         if val_batch_paths:
-            val_loss, val_ap, val_items = evaluate_from_batch_paths(
+            val_loss, val_f1, val_items = evaluate_from_batch_paths(
                 model=model,
                 batch_paths=val_batch_paths,
                 criterion=criterion,
@@ -246,39 +246,39 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
 
         print(
             f"Epoch {epoch}/{epochs} - "
-            f"train_loss: {avg_loss:.6f} - train_AP: {train_ap:.6f} - train_samples: {epoch_items} - "
-            f"val_loss: {val_loss:.6f} - val_AP: {val_ap:.6f} - val_samples: {val_items}"
+            f"train_loss: {avg_loss:.6f} - train_macroF1: {train_f1:.6f} - train_samples: {epoch_items} - "
+            f"val_loss: {val_loss:.6f} - val_macroF1: {val_f1:.6f} - val_samples: {val_items}"
         )
 
-        if save_best_model_path and not np.isnan(val_ap) and val_ap > best_val_ap:
-            best_val_ap = val_ap
+        if save_best_model_path and not np.isnan(val_f1) and val_f1 > best_val_f1:
+            best_val_f1 = val_f1
             best_epoch = epoch
             torch.save(
                 {
                     'epoch': epoch,
-                    'val_ap': float(val_ap),
+                    'val_f1': float(val_f1),
                     'model_state_dict': model.state_dict(),
                 },
                 save_best_model_path,
             )
             print(
-                f"  saved best checkpoint by val_AP={val_ap:.6f} "
+                f"  saved best checkpoint by val_macroF1={val_f1:.6f} "
                 f"to: {save_best_model_path}"
             )
 
         if use_early_stopping and epoch >= early_stopping_min_epochs and epoch_items > 0:
-            monitor_metric = val_ap if not np.isnan(val_ap) else train_ap
+            monitor_metric = val_f1 if not np.isnan(val_f1) else train_f1
             if np.isnan(monitor_metric):
-                print("  early-stopping skipped: AP metric is NaN")
+                print("  early-stopping skipped: F1 metric is NaN")
                 continue
 
-            # Monitorujeme AP (cim vyssi, tim lepsi).
+            # Monitorujeme F1 (cim vyssi, tim lepsi).
             should_stop = early_stopper.step(monitor_metric)
             best_metric = early_stopper.best_score
             wait = early_stopper.counter
             print(
                 "  early-stopping status: "
-                f"best_AP={best_metric:.6f}, "
+                f"best_F1={best_metric:.6f}, "
                 f"wait={wait}/{early_stopping_patience}"
             )
             if should_stop:
@@ -288,13 +288,13 @@ def train_from_manifest(manifest_path, epochs=5, batch_size=4, lr=1e-4,
     if save_best_model_path:
         if best_epoch is None:
             print(
-                "Best checkpoint was not saved because validation AP was NaN "
+                "Best checkpoint was not saved because validation F1 was NaN "
                 "in all epochs."
             )
         else:
             print(
                 f"Best checkpoint summary: epoch={best_epoch}, "
-                f"val_AP={best_val_ap:.6f}, path={save_best_model_path}"
+                f"val_macroF1={best_val_f1:.6f}, path={save_best_model_path}"
             )
 
     return model
@@ -315,7 +315,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--num-heads', type=int, default=4)
     parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--num-classes', type=int, default=2)
+    parser.add_argument('--num-classes', type=int, default=5)
     parser.add_argument('--device', default=None)
     parser.add_argument(
         '--val-manifest',
@@ -356,7 +356,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--save-best-model',
         default='gnn_model_best.pt',
-        help='Path to best checkpoint saved by validation AP (set empty string to disable).',
+        help='Path to best checkpoint saved by validation F1 (set empty string to disable).',
     )
     args = parser.parse_args()
 

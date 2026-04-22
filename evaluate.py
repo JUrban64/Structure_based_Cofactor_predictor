@@ -3,8 +3,8 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import f1_score, precision_recall_curve, roc_curve, auc, average_precision_score, confusion_matrix
-from torch_geometric.loader import DataLoader
+from sklearn.metrics import f1_score, precision_recall_curve, roc_curve, auc, average_precision_score, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.preprocessing import label_binarize
 
 # Import utility functions from training script
 from train import load_manifest, iter_graph_batches_from_paths
@@ -17,7 +17,7 @@ def load_trained_model(
     hidden_dim=256,
     num_heads=4,
     dropout=0.5,
-    num_classes=2,
+    num_classes=5,
     use_gat=True,
 ):
     print(f"Loading model from {model_path}...")
@@ -58,13 +58,19 @@ def load_trained_model(
     return model
 
 
-def evaluate_model(model, manifest_path, batch_size, device):
+def evaluate_model(model, manifest_path, batch_size, device, mc_dropout=True, mc_passes=30, entropy_thresh=1.5):
     print(f"Loading data from manifest: {manifest_path}")
     _, batch_paths = load_manifest(manifest_path)
     
     all_labels = []
     all_preds = []
+    all_probs = []
     total_items = 0
+
+    if mc_dropout:
+        model.train() # Enable dropout during evaluation
+    else:
+        model.eval()
 
     with torch.no_grad():
         for batch_file, graphs in iter_graph_batches_from_paths(batch_paths):
@@ -75,60 +81,54 @@ def evaluate_model(model, manifest_path, batch_size, device):
             for pyg_batch in loader:
                 pyg_batch = pyg_batch.to(device)
                 y = pyg_batch.y.view(-1).long()
-                logits = model(pyg_batch)
-
-                # Get probability for class 1 (positive interaction)
-                probs = torch.softmax(logits, dim=1)[:, 1]
+                
+                if mc_dropout:
+                    # Run N scholastic forward passes
+                    batch_probs = []
+                    for _ in range(mc_passes):
+                        logits = model(pyg_batch)
+                        batch_probs.append(torch.softmax(logits, dim=1))
+                    batch_probs = torch.stack(batch_probs) # [mc_passes, B, num_classes]
+                    mean_probs = batch_probs.mean(dim=0)
+                    
+                    # Compute entropy as uncertainty
+                    entropy = -torch.sum(mean_probs * torch.log(mean_probs + 1e-8), dim=1)
+                    
+                    preds = mean_probs.argmax(dim=1)
+                    # Reject low-confidence inputs
+                    preds[entropy > entropy_thresh] = -1
+                    probs = mean_probs
+                else:
+                    logits = model(pyg_batch)
+                    probs = torch.softmax(logits, dim=1)
+                    preds = probs.argmax(dim=1)
 
                 bs = int(y.shape[0])
                 total_items += bs
                 all_labels.extend(y.cpu().numpy().tolist())
-                all_preds.extend(probs.cpu().numpy().tolist())
+                all_preds.extend(preds.cpu().numpy().tolist())
+                all_probs.extend(probs.cpu().numpy().tolist())
 
             del loader
             del graphs
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    return np.array(all_labels), np.array(all_preds)
+    model.eval()
+    return np.array(all_labels), np.array(all_preds), np.array(all_probs)
 
 
-def plot_precision_recall(labels, preds, output_path='precision_recall_curve.png'):
-    precision, recall, _ = precision_recall_curve(labels, preds)
-    ap_score = average_precision_score(labels, preds)
-    
-    plt.figure()
-    plt.plot(recall, precision, marker='.', label=f'AP = {ap_score:.4f}')
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+def plot_conf_matrix(labels, preds, classes, output_path='confusion_matrix.png'):
+    cm = confusion_matrix(labels, preds, labels=classes)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[str(c) for c in classes])
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
     plt.savefig(output_path)
     plt.close()
-    print(f"Saved Precision-Recall curve to {output_path}")
+    print(f"Saved Confusion Matrix to {output_path}")
 
 
-def plot_roc(labels, preds, output_path='roc_curve.png'):
-    fpr, tpr, _ = roc_curve(labels, preds)
-    roc_auc = auc(fpr, tpr)
-    
-    plt.figure()
-    plt.plot(fpr, tpr, marker='.', label=f'AUC = {roc_auc:.4f}')
-    plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(output_path)
-    plt.close()
-    print(f"Saved ROC curve to {output_path}")
-
-def calc_conf_metrix(labels, preds, threshold=0.5):
-    predicted_classes = (preds > threshold).astype(int)
-    tn, fp, fn, tp = confusion_matrix(labels, predicted_classes).ravel()
-    return tn, fp, fn, tp
+# Deprecating plot_precision_recall, plot_roc for strict multi-class currently due to dimension mismatch. Macro aggregation computed numerically instead.
 
 
 def main():
@@ -137,7 +137,9 @@ def main():
     parser.add_argument('--manifest-path', default='test_graph_batches/manifest.json', help='Path to the test graph batches manifest.json')
     parser.add_argument('--batch-size', type=int, default=4, help='Batch size for evaluation')
     parser.add_argument('--device', default=None, help='Device to use (e.g. cpu, cuda)')
-    parser.add_argument('--threshold', type=float, default=0.5, help='Probability threshold for F1 score computing')
+    parser.add_argument('--mc-dropout', action='store_true', help='Enable MC Dropout for uncertainty evaluation')
+    parser.add_argument('--mc-passes', type=int, default=30, help='Number of MC Dropout passes')
+    parser.add_argument('--entropy-thresh', type=float, default=1.5, help='Entropy threshold to assign -1 / Unknown class label')
     parser.add_argument('--hidden-dim', type=int, default=256, help='Model hidden dimension')
     parser.add_argument('--num-heads', type=int, default=4, help='Model attention heads')
     
@@ -167,50 +169,57 @@ def main():
     )
 
     # Evaluate
-    labels, preds = evaluate_model(
+    labels, preds, probs = evaluate_model(
         model=model,
         manifest_path=args.manifest_path,
         batch_size=args.batch_size,
-        device=device
+        device=device,
+        mc_dropout=args.mc_dropout,
+        mc_passes=args.mc_passes,
+        entropy_thresh=args.entropy_thresh,
     )
 
     if len(labels) == 0:
         print("No evaluation data found.")
         return
 
-    # Compute metrics
-    ap_score = average_precision_score(labels, preds)
-    predicted_classes = (preds > args.threshold).astype(int)
-    f1 = f1_score(labels, predicted_classes)
-    tn, fp, fn, tp = calc_conf_metrix(labels, preds, args.threshold)
+    # Map unknown labels into valid evaluation format
+    valid_mask = labels != -1
+    if len(labels[valid_mask]) == 0:
+        print("No valid evaluation labels left after applying mask.")
+        return
+
+    labels_clean = labels[valid_mask]
+    preds_clean = preds[valid_mask]
+    
+    # Identify unique valid classes seen in this set (including the -1 reject category if it occurred)
+    classes = sorted(list(set(labels_clean).union(set(preds_clean))))
+    
+    # Compute multi-class metrics (excluding the rejection class from F1 target average potentially, but let's do macro)
+    f1 = f1_score(labels_clean, preds_clean, average='macro', zero_division=0)
+    
+    # Check how many were rejected
+    num_rejected = np.sum(preds == -1)
     
     print("\n" + "="*30)
     print("EVALUATION RESULTS")
     print("="*30)
     print(f"Total test samples : {len(labels)}")
-    print(f"Average Precision (AP): {ap_score:.4f}")
-    print(f"F1 Score (thresh={args.threshold:.2f}): {f1:.4f}")
-    print(f"True Negatives (TN): {tn}")
-    print(f"False Positives (FP): {fp}")
-    print(f"False Negatives (FN): {fn}")
-    print(f"True Positives (TP): {tp}")
+    print(f"Valid label samples: {len(labels_clean)}")
+    print(f"Rejected inputs (-1): {num_rejected}")
+    print(f"Macro F1 Score     : {f1:.4f}")
     print("="*30 + "\n")
 
-    # Generate plots
-    plot_precision_recall(labels, preds, output_path='precision_recall_curve_test.png')
-    plot_roc(labels, preds, output_path='roc_curve_test.png')
-
+    # Generate Confusion Matrix
+    plot_conf_matrix(labels_clean, preds_clean, classes, output_path='confusion_matrix_test.png')
 
     with open("evaluation_results_summary.txt", "w") as f:
         f.write("EVALUATION RESULTS\n")
         f.write("="*30 + "\n")
         f.write(f"Total test samples : {len(labels)}\n")
-        f.write(f"Average Precision (AP): {ap_score:.4f}\n")
-        f.write(f"F1 Score (thresh={args.threshold:.2f}): {f1:.4f}\n")
-        f.write(f"True Negatives (TN): {tn}\n")
-        f.write(f"False Positives (FP): {fp}\n")
-        f.write(f"False Negatives (FN): {fn}\n")
-        f.write(f"True Positives (TP): {tp}\n")
+        f.write(f"Valid label samples: {len(labels_clean)}\n")
+        f.write(f"Rejected inputs (-1): {num_rejected}\n")
+        f.write(f"Macro F1 Score     : {f1:.4f}\n")
         f.write("="*30 + "\n")
 
 if __name__ == '__main__':

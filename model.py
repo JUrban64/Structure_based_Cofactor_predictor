@@ -152,7 +152,7 @@ class GraphClassifier(nn.Module):
     """Simple classifier head on top of GNNBranch."""
 
     def __init__(self, node_dim=1280, hidden_dim=256, num_attention_heads=4,
-                 dropout=0.5, num_classes=2):
+                 dropout=0.5, num_classes=5):
         super().__init__()
         self.encoder = GNNBranch(
             node_dim=node_dim,

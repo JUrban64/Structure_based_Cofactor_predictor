@@ -87,16 +87,26 @@ class BindingSiteGraphDataset:
         self.feature_config = feature_config
         # Labely a sekvence se drží zvlášť pro split bez stavby grafů
         self.labels = []
-        for bs in self.data:
-            if 'label' in bs:
-                self.labels.append(int(bs['label']))
-            else:
+        valid_indices = []
+        for i, bs in enumerate(self.data):
+            lbl = int(bs.get('label', -1))
+            if lbl == -1:
                 lig = bs.get('ligand_name', '')
                 act = bs.get('actual_ligand_name', '')
-                if lig and act:
-                    self.labels.append(1 if lig == act else 0)
-                else:
-                    self.labels.append(1)  # Fallback
+                try:
+                    # Provide an error fallback lookup in case 'label' missing
+                    from Binding_site_ex import COFACTOR_FUNCTIONAL_GROUPS
+                    supported = list(COFACTOR_FUNCTIONAL_GROUPS.keys())
+                    if act in supported:
+                        lbl = supported.index(act)
+                except Exception:
+                    pass
+            if lbl != -1:
+                self.labels.append(lbl)
+                valid_indices.append(i)
+                
+        # Filter data to only valid labelled samples
+        self.data = [self.data[i] for i in valid_indices]
         self.sequences = [bs.get('binding_site_sequence', '') for bs in self.data]
         self.pdb_ids = [bs.get('pdb_file', '') for bs in self.data]
 
@@ -321,12 +331,8 @@ class BindingSiteGraphDataset:
             edge_attr = torch.zeros(len(edge_list), EDGE_ATTR_DIM)
         
         # ---- Label ----
-        if 'label' in bs_info:
-            label_val = int(bs_info['label'])
-        else:
-            lig = bs_info.get('ligand_name', '')
-            act = bs_info.get('actual_ligand_name', '')
-            label_val = 1 if (lig and act and lig == act) else (0 if lig and act else 1)
+        label_val = int(bs_info.get('label', -1))
+        # (Filtered above, so this should not be -1 in practice)
         y = torch.LongTensor([label_val])
         
         # ---- Sestavení PyG Data ----

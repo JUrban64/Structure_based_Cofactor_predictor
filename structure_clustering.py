@@ -35,6 +35,20 @@ def cluster_structures():
             pdb_data[base_id] = alias_pdb
 
         print(f"Loaded {len(pdb_data)} unique PDB structures")
+        
+        try:
+            import json
+            with open(os.path.join(script_dir, 'binding_sites_by_protein.json'), 'r') as f:
+                bs_data = json.load(f)
+            labels_by_pid = {}
+            for k, v in bs_data.items():
+                labels_by_pid[k] = str(v.get('label', '-1'))
+        except Exception:
+            labels_by_pid = {}
+            
+        inter = []
+        for base_id in pdb_data.keys():
+            inter.append((base_id, labels_by_pid.get(base_id, '-1')))
 
         try:
             e_splits, f_splits, inter_splits = datasail(
@@ -44,6 +58,9 @@ def cluster_structures():
                 epsilon=0.1,
                 e_type="P",
                 e_data=pdb_data,
+                f_type="O",
+                f_data=None,
+                inter=inter,
                 e_sim="foldseek",
                 e_args=" --tmscore-threshold 0.5 -c 0.8",
                 solver="SCIP",

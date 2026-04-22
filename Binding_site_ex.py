@@ -64,6 +64,7 @@ class BindingSiteExtractor:
     def __init__(self, distance_threshold=6.0):
         self.threshold = distance_threshold
         self.parser = PDBParser(QUIET=True)
+        self.supported_cofactors = list(COFACTOR_FUNCTIONAL_GROUPS.keys())
 
     def _protein_id_from_path(self, pdb_file):
         """Create stable protein identifier from PDB filename."""
@@ -303,12 +304,12 @@ class BindingSiteExtractor:
             for res in binding_site_residues
         ])
         
-        # Determine true label based on parent directory name
-        label = 1
-        if 'negative' in pdb_file.lower():
-            label = 0
-        elif 'positive' in pdb_file.lower():
-            label = 1
+        # Determine true label based on the extracted cofactor name (actual_ligand_name)
+        label = -1
+        if actual_ligand_name in self.supported_cofactors:
+            label = self.supported_cofactors.index(actual_ligand_name)
+        else:
+            print(f"Warning: Unknown cofactor {actual_ligand_name} in {pdb_file}")
             
         return {
             'protein_id': self._protein_id_from_path(pdb_file),
