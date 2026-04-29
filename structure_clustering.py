@@ -1,11 +1,12 @@
-from datasail.sail import datasail
 import os
-import glob
+import json
+import random
 import shutil
+import subprocess
 import tempfile
+import glob
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
 
 def create_alias_pdb(src_pdb, dst_pdb):
     """Vytvoří symlink, nebo při selhání fyzickou kopii."""
@@ -14,97 +15,148 @@ def create_alias_pdb(src_pdb, dst_pdb):
     except OSError:
         shutil.copy2(src_pdb, dst_pdb)
 
-
 def cluster_structures():
-    pdb_root = os.path.join(script_dir, 'PDB' or 'data_sample')
+    pdb_root = os.path.join(script_dir, 'PDB')
+    if not os.path.exists(pdb_root):
+        pdb_root = os.path.join(script_dir, 'data_sample')
+        
     pdb_files = glob.glob(os.path.join(pdb_root, '**', '*.pdb'), recursive=True)
 
-    with tempfile.TemporaryDirectory(prefix="datasail_pdb_") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="fs_pdb_") as tmp_dir:
         pdb_data = {}
-
+        tmp_pdb_dir = os.path.join(tmp_dir, "pdbs")
+        os.makedirs(tmp_pdb_dir, exist_ok=True)
+        
         for pdb_file in pdb_files:
-            # Ponecháme pouze base_id bez přípony.
             base_id = os.path.basename(pdb_file).replace(".pdb", "")
             
             if base_id in pdb_data:
                 print(f"Warning: duplicate ID '{base_id}', skipping {pdb_file}")
                 continue
                 
-            alias_pdb = os.path.join(tmp_dir, f"{base_id}.pdb")
+            alias_pdb = os.path.join(tmp_pdb_dir, f"{base_id}.pdb")
             create_alias_pdb(pdb_file, alias_pdb)
             pdb_data[base_id] = alias_pdb
 
         print(f"Loaded {len(pdb_data)} unique PDB structures")
+        if len(pdb_data) == 0:
+            print("No PDBs found.")
+            return None, None, None
         
         try:
-            import json
             with open(os.path.join(script_dir, 'binding_sites_by_protein.json'), 'r') as f:
                 bs_data = json.load(f)
             labels_by_pid = {}
             for k, v in bs_data.items():
                 labels_by_pid[k] = str(v.get('label', '-1'))
         except Exception:
+            print("Warning: Could not load binding_sites_by_protein.json, using default label '-1'")
             labels_by_pid = {}
             
-        inter = []
-        for base_id in pdb_data.keys():
-            inter.append((base_id, labels_by_pid.get(base_id, '-1')))
-
-        try:
-            e_splits, f_splits, inter_splits = datasail(
-                techniques=["C1e"],
-                splits=[8, 1, 1],
-                names=["train", "validation", "test"],
-                epsilon=0.1,
-                e_type="P",
-                e_data=pdb_data,
-                f_type="O",
-                f_data=None,
-                inter=inter,
-                e_sim="foldseek",
-                e_args=" --tmscore-threshold 0.5 -c 0.8",
-                solver="SCIP",
-            )
-            
-            # Pojistka pro případ, že DataSAIL vrátí dictionary zabalený v Listu (kvůli parametru 'runs')
-            structure_splits = e_splits.get("C1e", {})
-            if isinstance(structure_splits, list):
-                structure_splits = structure_splits[0]
-                
-        except Exception as e:
-            print(f"Error occurred while running DataSAIL: {e}")
-            import traceback
-            traceback.print_exc()
-            return None, None, None
-
-        train, validation, test = [], [], []
-        for protein_id, split in structure_splits.items():
-            if split == "train":
-                train.append(protein_id)
-            elif split == "validation":
-                validation.append(protein_id)
-            elif split == "test":
-                test.append(protein_id)
-
-        print(f"Train:      {len(train)} proteins")
-        print(f"Validation: {len(validation)} proteins")
-        print(f"Test:       {len(test)} proteins")
+        fs_out_prefix = os.path.join(tmp_dir, "fs_out")
+        fs_tmp_dir = os.path.join(tmp_dir, "fs_tmp")
+        os.makedirs(fs_tmp_dir, exist_ok=True)
         
-        return train, validation, test
+        command = [
+            "foldseek", "easy-cluster", 
+            tmp_pdb_dir, fs_out_prefix, fs_tmp_dir,
+            "--tmscore-threshold", "0.5",
+            "--alignment-type", "1",
+            "-c", "0.8"
+        ]
+        
+        print("Running Foldseek...")
+        try:
+            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError as e:
+            print(f"Error running Foldseek: {e}")
+            return None, None, None
+        except FileNotFoundError:
+            print("Error: Foldseek executable not found. Please ensure it is installed and in your PATH.")
+            return None, None, None
+            
+        cluster_tsv = f"{fs_out_prefix}_clu.tsv"
+        clusters = {}
+        if not os.path.exists(cluster_tsv):
+            print(f"Error: Foldseek output {cluster_tsv} not found.")
+            return None, None, None
+            
+        with open(cluster_tsv, 'r') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 2:
+                    rep = parts[0].replace('.pdb', '')
+                    member = parts[1].replace('.pdb', '')
+                    if rep not in clusters:
+                        clusters[rep] = []
+                    clusters[rep].append(member)
+                    
+        print(f"Foldseek identified {len(clusters)} clusters.")
 
+        total_labels = {}
+        for members in clusters.values():
+            for m in members:
+                l = labels_by_pid.get(m, '-1')
+                total_labels[l] = total_labels.get(l, 0) + 1
+                
+        sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
+        
+        splits = {"train": [], "validation": [], "test": []}
+        split_names = ["train", "validation", "test"]
+        split_ratios = {"train": 0.8, "validation": 0.1, "test": 0.1}
+        
+        split_counts = {
+            "train": {l: 0 for l in total_labels},
+            "validation": {l: 0 for l in total_labels},
+            "test": {l: 0 for l in total_labels}
+        }
+        
+        for rep, members in sorted_clusters:
+            cluster_labels = {}
+            for m in members:
+                l = labels_by_pid.get(m, '-1')
+                cluster_labels[l] = cluster_labels.get(l, 0) + 1
+                
+            best_split = None
+            best_score = float('inf')
+            
+            for split in split_names:
+                score = 0
+                for l in total_labels:
+                    target = total_labels[l] * split_ratios[split]
+                    if target == 0:
+                        continue
+                    current = split_counts[split][l]
+                    added = cluster_labels.get(l, 0)
+                    fullness = (current + added) / target
+                    score += fullness ** 2 
+                    
+                if score < best_score:
+                    best_score = score
+                    best_split = split
+                    
+            splits[best_split].extend(members)
+            for l, count in cluster_labels.items():
+                split_counts[best_split][l] += count
+                
+        print(f"Train:      {len(splits['train'])} proteins")
+        print(f"Validation: {len(splits['validation'])} proteins")
+        print(f"Test:       {len(splits['test'])} proteins")
+        
+        return splits["train"], splits["validation"], splits["test"]
 
 if __name__ == "__main__":
     train, validation, test = cluster_structures()
 
+    if train is not None:
+        with open(os.path.join(script_dir, 'train.txt'), 'w') as f:
+            for item in train:
+                f.write(f"{item}\n")    
 
-    with open(os.path.join(script_dir, 'train.txt'), 'w') as f:
-        for item in train:
-            f.write(f"{item}\n")    
-
-    with open(os.path.join(script_dir, 'validation.txt'), 'w') as f:
-        for item in validation:
-            f.write(f"{item}\n")
-    
-    with open(os.path.join(script_dir, 'test.txt'), 'w') as f:
-        for item in test:
-            f.write(f"{item}\n")
+        with open(os.path.join(script_dir, 'validation.txt'), 'w') as f:
+            for item in validation:
+                f.write(f"{item}\n")
+        
+        with open(os.path.join(script_dir, 'test.txt'), 'w') as f:
+            for item in test:
+                f.write(f"{item}\n")
