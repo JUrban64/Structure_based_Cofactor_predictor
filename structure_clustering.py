@@ -9,11 +9,8 @@ import glob
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 def create_alias_pdb(src_pdb, dst_pdb):
-    """Vytvoří symlink, nebo při selhání fyzickou kopii."""
-    try:
-        os.symlink(src_pdb, dst_pdb)
-    except OSError:
-        shutil.copy2(src_pdb, dst_pdb)
+    """Vytvoří fyzickou kopii (symlinky mohou dělat problémy na HPC/v kontejnerech)."""
+    shutil.copy2(src_pdb, dst_pdb)
 
 def cluster_structures():
     pdb_root = os.path.join(script_dir, 'PDB')
@@ -67,7 +64,7 @@ def cluster_structures():
         
         print("Running Foldseek...")
         try:
-            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error running Foldseek: {e}")
             return None, None, None
